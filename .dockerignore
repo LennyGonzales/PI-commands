@@ -1,0 +1,8 @@
+# Git
+.git
+.gitignore
+
+# Files
+README.md
+Dockerfile
+ifnetshow/_etc_systemd_system_ifnetshow.service
