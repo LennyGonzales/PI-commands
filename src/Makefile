@@ -3,13 +3,13 @@ TARGET ?= ifshow # Defaut value : ifshow
 CC = gcc
 CFLAGS = -static -Wall -Wextra -O2	# Active all warnings and optimize the code
 
-SRC = $(TARGET)/$(TARGET).c
-BIN = $(TARGET)/$(TARGET)
+SRC = $(TARGET).c
+BIN = $(TARGET)
 
 all: $(BIN)
 
 $(BIN): $(SRC)
-	$(CC) $(CFLAGS) -o $(BIN) $(SRC)
+	$(CC) $(CFLAGS) -o ifnetshow ifnetshow.c interfaces.c
 
 clean:
 	rm -f $(BIN)
