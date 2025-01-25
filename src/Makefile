@@ -1,7 +1,7 @@
 TARGET ?= ifshow # Defaut value : ifshow
 
-CC = aarch64-alpine-linux-musl-gcc
-CFLAGS = -Wall -Wextra -O2	# Active all warnings and optimize the code
+CC = gcc
+CFLAGS = -static -Wall -Wextra -O2	# Active all warnings and optimize the code
 
 SRC = $(TARGET)/$(TARGET).c
 BIN = $(TARGET)/$(TARGET)

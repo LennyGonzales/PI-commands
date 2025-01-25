@@ -1,4 +1,3 @@
-// Includes communs
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,12 +6,16 @@
 #include <sys/socket.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
+#include <netinet/in.h>
 
-// Constantes
-#define PORT 12345 // Port du serveur
 #define BUFFER_SIZE 1024
+#define PORT 12345
 
-// Fonction pour afficher les interfaces (réutilisation de ifshow)
+/**
+ * Affiche les interfaces réseau disponibles.
+ *
+ * @param response_buffer Tampon pour stocker la réponse.
+ */
 void list_interfaces(char *response_buffer) {
     struct if_nameindex *interfaces = if_nameindex();
     if (!interfaces) {
@@ -29,6 +32,12 @@ void list_interfaces(char *response_buffer) {
     if_freenameindex(interfaces);
 }
 
+/**
+ * Récupère les détails d'une interface réseau spécifique.
+ *
+ * @param interface_name Nom de l'interface.
+ * @param response_buffer Tampon pour stocker les détails.
+ */
 void get_interface_details(const char *interface_name, char *response_buffer) {
     int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (socket_fd < 0) {
@@ -37,22 +46,38 @@ void get_interface_details(const char *interface_name, char *response_buffer) {
     }
 
     struct ifreq interface_request;
+    char ipv4_str[INET_ADDRSTRLEN];
+    char ipv6_str[INET6_ADDRSTRLEN];
+
     strncpy(interface_request.ifr_name, interface_name, IFNAMSIZ - 1);
     interface_request.ifr_name[IFNAMSIZ - 1] = '\0';
 
+    snprintf(response_buffer, BUFFER_SIZE, "Interface: %s\n", interface_name);
+
+    // IPv4
     if (ioctl(socket_fd, SIOCGIFADDR, &interface_request) == 0) {
         struct sockaddr_in *ipv4_address = (struct sockaddr_in *)&interface_request.ifr_addr;
-        char temp_buffer[BUFFER_SIZE];
-        snprintf(temp_buffer, sizeof(temp_buffer), "  IPv4: %s\n", inet_ntoa(ipv4_address->sin_addr));
-        strncat(response_buffer, temp_buffer, BUFFER_SIZE - strlen(response_buffer) - 1);
+        inet_ntop(AF_INET, &ipv4_address->sin_addr, ipv4_str, sizeof(ipv4_str));
+        strncat(response_buffer, "  IPv4: ", BUFFER_SIZE - strlen(response_buffer) - 1);
+        strncat(response_buffer, ipv4_str, BUFFER_SIZE - strlen(response_buffer) - 1);
+        strncat(response_buffer, "\n", BUFFER_SIZE - strlen(response_buffer) - 1);
     } else {
         strncat(response_buffer, "  IPv4: Non disponible\n", BUFFER_SIZE - strlen(response_buffer) - 1);
     }
 
+    // IPv6
+    struct sockaddr_in6 *ipv6_address = (struct sockaddr_in6 *)&interface_request.ifr_addr;
+    inet_ntop(AF_INET6, &ipv6_address->sin6_addr, ipv6_str, sizeof(ipv6_str));
+    strncat(response_buffer, "  IPv6: ", BUFFER_SIZE - strlen(response_buffer) - 1);
+    strncat(response_buffer, ipv6_str, BUFFER_SIZE - strlen(response_buffer) - 1);
+    strncat(response_buffer, "\n", BUFFER_SIZE - strlen(response_buffer) - 1);
+
     close(socket_fd);
 }
 
-// --- Serveur ---
+/**
+ * Démarre le serveur pour répondre aux requêtes réseau.
+ */
 void start_server() {
     int server_fd, client_fd;
     struct sockaddr_in server_addr, client_addr;
@@ -115,7 +140,12 @@ void start_server() {
     close(server_fd);
 }
 
-// --- Client ---
+/**
+ * Démarre le client pour envoyer des requêtes réseau.
+ *
+ * @param server_ip Adresse IP du serveur.
+ * @param command Commande à envoyer.
+ */
 void start_client(const char *server_ip, const char *command) {
     int socket_fd;
     struct sockaddr_in server_addr;
@@ -150,16 +180,31 @@ void start_client(const char *server_ip, const char *command) {
     close(socket_fd);
 }
 
-// --- Point d'entrée ---
+/**
+ * Point d'entrée principal du programme.
+ *
+ * @param argc Nombre d'arguments.
+ * @param argv Arguments de la ligne de commande.
+ * @return Code de sortie.
+ */
 int main(int argc, char *argv[]) {
     if (argc == 2 && strcmp(argv[1], "--server") == 0) {
         start_server();
-    } else if (argc == 4 && strcmp(argv[1], "-n") == 0) {
-        start_client(argv[2], argv[3]);
+    } else if (argc == 3 && strcmp(argv[1], "-a") == 0) {
+        char server_ip[16];
+        strcpy(server_ip, argv[2]);
+        start_client(server_ip, "-a");
+    } else if (argc == 4 && strcmp(argv[1], "-i") == 0) {
+        char server_ip[16];
+        strcpy(server_ip, argv[3]);
+        char command[BUFFER_SIZE];
+        snprintf(command, sizeof(command), "-i %s", argv[2]);
+        start_client(server_ip, command);
     } else {
         fprintf(stderr, "Usage:\n");
         fprintf(stderr, "  %s --server\n", argv[0]);
-        fprintf(stderr, "  %s -n <adresse_serveur> <-a | -i <interface>>\n", argv[0]);
+        fprintf(stderr, "  %s -a <adresse_serveur>\n", argv[0]);
+        fprintf(stderr, "  %s -i <interface> <adresse_serveur>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
