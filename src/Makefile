@@ -9,7 +9,7 @@ BIN = $(TARGET)
 all: $(BIN)
 
 $(BIN): $(SRC)
-#	$(CC) $(CFLAGS) -o ifshow ifshow.c interfaces.c
+	$(CC) $(CFLAGS) -o ifshow ifshow.c interfaces.c
 	$(CC) $(CFLAGS) -o ifnetshow ifnetshow.c interfaces.c
 #	$(CC) $(CFLAGS) -o neighborshow neighborshow.c
 
