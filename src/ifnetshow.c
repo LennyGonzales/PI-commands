@@ -91,7 +91,7 @@ void start_server()
         exit(EXIT_FAILURE);
     }
 
-    printf("Serveur en attente de connexions sur le port %d...\n", SERVER_PORT);
+    // printf("Serveur en attente de connexions sur le port %d...\n", SERVER_PORT);
 
     // Boucle principale d'acceptation des connexions
     while (1)
@@ -99,11 +99,11 @@ void start_server()
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
         if (client_fd < 0)
         {
-            perror("Erreur lors de l'acceptation d'une connexion");
+            // perror("Erreur lors de l'acceptation d'une connexion");
             continue;
         }
 
-        printf("Client connecté: %s\n", inet_ntoa(client_addr.sin_addr));
+        // printf("Client connecté: %s\n", inet_ntoa(client_addr.sin_addr));
 
         // Lecture de la commande du client
         memset(buffer, 0, BUFFER_SIZE);
