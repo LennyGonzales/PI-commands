@@ -1,138 +1,183 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <netdb.h>
-#include "neighbor.h"
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <errno.h>
+#include <time.h>
+#include <sys/select.h>
+#include "neighborshow.h"
 
-void start_neighbor_agent() {
-    int server_fd, client_fd;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    char buffer[1024];
+#define RESPONSE_TIMEOUT 3   /* seconds to wait for responses */
+#define MAX_HOSTNAMES 100
 
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        perror("Socket creation failed");
+typedef struct {
+    char hostname[256];
+} hostname_entry;
+
+void print_usage(char* fileName) {
+    fprintf(stderr, "Usage: %s [-hop n]\n", fileName);
+    exit(EXIT_FAILURE);
+}
+
+int parse_arguments(int argc, char *argv[]) {
+    int hop = 1;  /* default hop count is 1 */
+    
+    /* Parse optional command-line argument: -hop n */
+    if (argc == 3) {
+        if (strcmp(argv[1], "-hop") == 0) {
+            hop = atoi(argv[2]);
+            if (hop < 1)
+                hop = 1;
+        } else if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
+            print_usage(argv[0]);
+        }
+    } else if (argc != 1) {
+        print_usage(argv[0]);
+    }
+
+    return hop;
+}
+
+int create_broadcast_socket() {
+    int sockfd;
+    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("socket");
         exit(EXIT_FAILURE);
     }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(NEIGHBOR_PORT);
-
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Bind failed");
-        close(server_fd);
+    /* Enable broadcast */
+    int broadcastEnable = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable)) < 0) {
+        perror("setsockopt (SO_BROADCAST)");
         exit(EXIT_FAILURE);
     }
 
-    if (listen(server_fd, 5) < 0) {
-        perror("Listen failed");
-        close(server_fd);
+    /* Bind the socket to an ephemeral port so we can receive responses */
+    struct sockaddr_in local_addr;
+    memset(&local_addr, 0, sizeof(local_addr));
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    local_addr.sin_port = 0;  /* system assigns port */
+    if (bind(sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
+        perror("bind");
         exit(EXIT_FAILURE);
     }
 
-    printf("Neighbor agent listening on port %d\n", NEIGHBOR_PORT);
+    return sockfd;
+}
+
+int generate_request_id() {
+    srand(time(NULL) ^ getpid());
+    return rand() % 1000000;
+}
+
+void send_broadcast_request(int sockfd, int req_id, int hop) {
+    /* Prepare the request message:
+     *   "NEIGHBOR_REQUEST <req_id> <hop>"
+     */
+    char request[MAX_BUFFER];
+    snprintf(request, sizeof(request), "%s %d %d", REQUEST_PREFIX, req_id, hop);
+
+    /* Set up the broadcast address */
+    struct sockaddr_in broadcast_addr;
+    memset(&broadcast_addr, 0, sizeof(broadcast_addr));
+    broadcast_addr.sin_family = AF_INET;
+    broadcast_addr.sin_port = htons(NEIGHBOR_PORT);
+    broadcast_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
+
+    /* Send the broadcast discovery request */
+    if (sendto(sockfd, request, strlen(request), 0,
+               (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr)) < 0) {
+        perror("sendto");
+        exit(EXIT_FAILURE);
+    }
+}
+
+int collect_neighbor_responses(int sockfd, int req_id, hostname_entry *hostnames) {
+    /* Wait for responses for a fixed timeout */
+    fd_set read_fds;
+    struct timeval timeout;
+    timeout.tv_sec = RESPONSE_TIMEOUT;
+    timeout.tv_usec = 0;
+
+    int hostname_count = 0;
 
     while (1) {
-        client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-        if (client_fd < 0) {
-            perror("Accept failed");
-            continue;
+        FD_ZERO(&read_fds);
+        FD_SET(sockfd, &read_fds);
+        int ret = select(sockfd + 1, &read_fds, NULL, NULL, &timeout);
+        if (ret < 0) {
+            perror("select");
+            break;
+        } else if (ret == 0) {
+            /* Timeout expired */
+            break;
         }
 
-        // Send local hostname information
-        char hostname[MAX_HOSTNAME_LENGTH];
-        gethostname(hostname, sizeof(hostname));
-        write(client_fd, hostname, strlen(hostname));
-        close(client_fd);
-    }
-}
+        char buffer[MAX_BUFFER];
+        struct sockaddr_in sender_addr;
+        socklen_t sender_len = sizeof(sender_addr);
+        int n = recvfrom(sockfd, buffer, MAX_BUFFER - 1, 0,
+                         (struct sockaddr *)&sender_addr, &sender_len);
+        if (n < 0) {
+            perror("recvfrom");
+            break;
+        }
+        buffer[n] = '\0';
 
-// neighborshow.c
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include "neighbor.h"
+        /* Expected response format:
+         *   "NEIGHBOR_RESPONSE <req_id> <hostname>"
+         */
+        char prefix[32];
+        int resp_id;
+        char resp_hostname[256];
+        if (sscanf(buffer, "%31s %d %255s", prefix, &resp_id, resp_hostname) != 3)
+            continue;
+        if (strcmp(prefix, RESPONSE_PREFIX) != 0 || resp_id != req_id)
+            continue;
 
-int discover_neighbors(NeighborList *list, int max_hops) {
-    // Discover neighbors on the local network
-    // This is a simplified implementation and would need network scanning logic
-    list->neighbor_count = 0;
-
-    // Example local network scanning (would need more sophisticated implementation)
-    char *local_network[] = {"192.168.1.1", "192.168.1.2", "192.168.1.3"};
-    int network_size = sizeof(local_network) / sizeof(local_network[0]);
-
-    for (int i = 0; i < network_size && list->neighbor_count < MAX_NEIGHBORS; i++) {
-        int socket_fd;
-        struct sockaddr_in server_addr;
-        char buffer[MAX_HOSTNAME_LENGTH];
-
-        socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (socket_fd < 0) continue;
-
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(NEIGHBOR_PORT);
-        inet_pton(AF_INET, local_network[i], &server_addr.sin_addr);
-
-        if (connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == 0) {
-            int bytes_received = recv(socket_fd, buffer, sizeof(buffer) - 1, 0);
-            if (bytes_received > 0) {
-                buffer[bytes_received] = '\0';
-                
-                // Check for duplicates
-                int is_duplicate = 0;
-                for (int j = 0; j < list->neighbor_count; j++) {
-                    if (strcmp(list->neighbors[j].hostname, buffer) == 0) {
-                        is_duplicate = 1;
-                        break;
-                    }
-                }
-
-                if (!is_duplicate) {
-                    strncpy(list->neighbors[list->neighbor_count].hostname, buffer, MAX_HOSTNAME_LENGTH);
-                    strncpy(list->neighbors[list->neighbor_count].ip_address, local_network[i], 64);
-                    list->neighbor_count++;
-                }
+        /* Check if this hostname is already in our list */
+        int exists = 0;
+        for (int i = 0; i < hostname_count; i++) {
+            if (strcmp(hostnames[i].hostname, resp_hostname) == 0) {
+                exists = 1;
+                break;
             }
         }
-        close(socket_fd);
+        if (!exists && hostname_count < MAX_HOSTNAMES) {
+            strcpy(hostnames[hostname_count].hostname, resp_hostname);
+            hostname_count++;
+        }
     }
 
-    return list->neighbor_count;
+    return hostname_count;
 }
 
-void print_usage(const char *program_name) {
-    fprintf(stderr, "Usage: %s [-hop n]\n", program_name);
-    fprintf(stderr, "  -hop n: display neighbors within n network hops (default: 1)\n");
+void print_neighbors(int hop, hostname_entry *hostnames, int hostname_count) {
+    /* Print the list of unique neighboring hostnames */
+    printf("Neighboring machines (hop = %d):\n", hop);
+    for (int i = 0; i < hostname_count; i++) {
+        printf("  %s\n", hostnames[i].hostname);
+    }
 }
 
 int main(int argc, char *argv[]) {
-    int max_hops = 1;
+    int hop = parse_arguments(argc, argv);
+    
+    int sockfd = create_broadcast_socket();
+    int req_id = generate_request_id();
+    
+    send_broadcast_request(sockfd, req_id, hop);
+    
+    hostname_entry hostnames[MAX_HOSTNAMES];
+    int hostname_count = collect_neighbor_responses(sockfd, req_id, hostnames);
+    
+    print_neighbors(hop, hostnames, hostname_count);
 
-    if (argc == 3 && strcmp(argv[1], "-hop") == 0) {
-        max_hops = atoi(argv[2]);
-    } else if (argc > 1) {
-        print_usage(argv[0]);
-        return EXIT_FAILURE;
-    }
-
-    NeighborList neighbors;
-    int discovered = discover_neighbors(&neighbors, max_hops);
-
-    printf("Discovered %d neighbors:\n", discovered);
-    for (int i = 0; i < discovered; i++) {
-        printf("  %s (IP: %s)\n", 
-               neighbors.neighbors[i].hostname, 
-               neighbors.neighbors[i].ip_address);
-    }
-
-    return EXIT_SUCCESS;
+    close(sockfd);
+    return 0;
 }
